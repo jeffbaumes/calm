@@ -163,8 +163,11 @@ fn handle_request(wire: &Wire, id: Value, method: &str, params: &Value) {
 struct Running {
     rpc: Rpc,
     cwd: PathBuf,
-    /// A session being (or already) created, so the next thought starts instantly.
+    /// The first session, created at launch so the first thought starts instantly.
     warm: Mutex<Option<JoinHandle<Result<String, String>>>>,
+    /// The one long conversation. Every thought continues it, so Claude remembers what came before.
+    session: Mutex<Option<String>>,
+    /// The session while a thought is in flight (what `cancel` interrupts).
     current: Mutex<Option<String>>,
     _child: Child, // killed when dropped
 }
@@ -181,7 +184,7 @@ impl Agent {
         let _ = self.running(app).await;
     }
 
-    /// The live adapter, starting it (and warming a session) if it isn't running or has died.
+    /// The live adapter, starting it (and warming its first session) if it isn't running or has died.
     async fn running(&self, app: &AppHandle) -> Result<Arc<Running>, String> {
         let mut slot = self.running.lock().await;
         if let Some(r) = slot.as_ref().filter(|r| r.rpc.wire.alive.load(Ordering::SeqCst)) {
@@ -193,25 +196,24 @@ impl Agent {
         Ok(r)
     }
 
-    /// Sends one prompt in a fresh session, streaming text as `calm://chunk` events.
+    /// Sends one prompt into the ongoing conversation, streaming text as `calm://chunk` events.
     pub async fn ask(&self, app: &AppHandle, prompt: String) -> Result<String, String> {
         if self.busy.swap(true, Ordering::SeqCst) {
             return Err("still thinking about the last one".into());
         }
         let result = async {
             let r = self.running(app).await?;
-            let warm = r.warm.lock().unwrap().take();
-            let session = match warm {
-                Some(handle) => handle.await.map_err(|e| e.to_string())??,
-                None => r.new_session().await?,
-            };
+            let session = r.session().await?;
             *r.current.lock().unwrap() = Some(session.clone());
             let done = r
                 .rpc
                 .call("session/prompt", json!({ "sessionId": session, "prompt": [{ "type": "text", "text": prompt }] }))
                 .await;
             *r.current.lock().unwrap() = None;
-            r.warm_session();
+            // A session begun while signed out can stay stuck that way: start over after signing in.
+            if matches!(&done, Err(e) if e.to_lowercase().contains("authenticat")) {
+                *r.session.lock().unwrap() = None;
+            }
             Ok(done?["stopReason"].as_str().unwrap_or("end_turn").to_string())
         }
         .await;
@@ -240,6 +242,20 @@ impl Agent {
 }
 
 impl Running {
+    /// The ongoing conversation, begun on first use.
+    async fn session(&self) -> Result<String, String> {
+        if let Some(session) = self.session.lock().unwrap().clone() {
+            return Ok(session);
+        }
+        let warm = self.warm.lock().unwrap().take();
+        let session = match warm {
+            Some(handle) => handle.await.map_err(|e| e.to_string())??,
+            None => self.new_session().await?,
+        };
+        *self.session.lock().unwrap() = Some(session.clone());
+        Ok(session)
+    }
+
     async fn new_session(&self) -> Result<String, String> {
         new_session(&self.rpc, &self.cwd).await
     }
@@ -324,5 +340,5 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         json!({ "protocolVersion": 1, "clientCapabilities": {}, "clientInfo": { "name": "calm", "version": "0.1.0" } }),
     )
     .await?;
-    Ok(Running { rpc, cwd, warm: Mutex::new(None), current: Mutex::new(None), _child: child })
+    Ok(Running { rpc, cwd, warm: Mutex::new(None), session: Mutex::new(None), current: Mutex::new(None), _child: child })
 }

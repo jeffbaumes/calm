@@ -13,7 +13,7 @@ npm install
 npm run tauri dev
 ```
 
-Type anywhere to ask something, or paste a link. Enter sends, Esc lets go of a question in flight. The controls fade away when the mouse rests.
+Type anywhere to ask or say something. Enter sends, Esc lets go of a question in flight. The controls fade away when the mouse rests.
 
 | env var | effect |
 | --- | --- |
@@ -34,10 +34,10 @@ Svelte UI  --invoke("ask")-->  Rust (src-tauri/src/agent.rs)  --stdio JSON-RPC--
 ```
 
 - `agent.rs` is a small hand-written ACP client (initialize, session/new, session/prompt, session/update). The `agent-client-protocol` crate (2.2) was checked and judged more machinery than four messages need; swapping it in later would stay inside that one file.
-- Each thought gets its own fresh session, and the next one is created in the background so asking feels immediate.
-- The agent is Claude's normal coding agent with the calm voice added to its instructions (`system_prompt.txt`: short, plain, gentle, at most about three sentences, no narrating of steps). No Claude Code settings files are loaded (hooks, allow rules, CLAUDE.md), so nothing from your usual setup can interrupt it or approve things behind the card.
+- Everything is one long conversation for as long as the app runs, so Claude remembers what you asked before. The first session is created at launch so the first thought is quick. (After a restart it starts fresh; if you sign in again after a failed attempt it also starts over.)
+- The agent is Claude's normal coding agent with the calm voice added to its instructions (`system_prompt.txt`: short, plain, at most about three sentences, no narrating of steps, and no mood words like "quiet" or "gentle", which models tend to over-use if the prompt itself leans on them). No Claude Code settings files are loaded (hooks, allow rules, CLAUDE.md), so nothing from your usual setup can interrupt it or approve things behind the card.
 - **Looking never asks.** Reading, searching and web fetches run silently. In the default `auto` mode Claude decides what else is safe, so you are rarely asked about anything; whatever it does ask about (in the stricter modes, everything that changes things) is held in Rust until you answer a quiet full-screen card: Enter or `y` for yes, Esc or `n` for not now. The card shows the real command or path, not just the model's description of it. Esc during a question means "not now"; Esc at any other time lets go of the thought.
-- While it works, a faint line says what it is doing. Anything it says before starting work is cleared, so only the final thought stays on screen.
+- A reply is held back until it has fully arrived, then laid out once and revealed word by word, so nothing reflows while it streams. Anything the agent says before it starts working is discarded as narration. While it works, a single line ("one moment", later "still working", and so on) stays in the background.
 - `src/lib/reveal.svelte.ts` releases words at reading pace (a little longer after punctuation) regardless of how fast they stream. Words are laid out in advance and simply come into focus, so text does not jump.
 
 ## Safety
@@ -51,5 +51,5 @@ There is no login flow. The adapter reuses your existing Claude Code login (macO
 ## Not done yet
 
 - Zoom in/out summary tree with caching (build step 3)
-- URL reading list and time-of-day palette (step 4). Pasting a URL already works, since the agent can fetch it.
+- A quiet reading list and a time-of-day palette (step 4)
 - Packaging: the adapter is found at `node_modules/` relative to the source tree and needs `node` on PATH, which is fine for `tauri dev` but not for a bundled `.app`.

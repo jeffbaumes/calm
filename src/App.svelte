@@ -20,8 +20,9 @@
   let prompt = $state("");
   let whisper: Whisper;
   let clearing: Promise<void> | null = null; // the current thought is fading out
-  let held: string[] = []; // words that arrived while it was
+  let arriving = ""; // the answer so far; shown only once it is whole, so nothing reflows while it arrives
   let busy = false;
+  let working = $state(false); // a thought is being made: the prompt stays out of the way
   let cancelled = false;
   let rest: ReturnType<typeof setTimeout>;
 
@@ -72,28 +73,34 @@
       reveal.reset();
       leaving = false;
       clearing = null;
-      held.splice(0).forEach((text) => reveal.push(text));
     });
     return clearing;
   }
 
   async function think(text: string) {
     busy = true;
+    working = true;
     cancelled = false;
     await clearThought();
     waiting = true;
     beginWaiting();
+    arriving = "";
     try {
       await ask(text);
+      await sleep(150); // let the last streamed words land
       await clearing;
-      if (cancelled && !reveal.words.length) reveal.set("Alright. We can leave that one for now.");
-      else reveal.end();
+      const answer = arriving.trim();
+      waiting = false;
+      if (answer) reveal.set(answer);
+      else reveal.set(cancelled ? "Alright. We can leave that one for now." : "All done.");
     } catch (error) {
+      arriving = "";
       await clearThought();
       reveal.set(gentle(String(error)));
     } finally {
       waiting = false;
       busy = false;
+      working = false;
       endWaiting();
       permission = null;
     }
@@ -124,6 +131,7 @@
   function onKey(event: KeyboardEvent) {
     if (permission) {
       // While a question is open, keys answer it and nothing else happens.
+      event.preventDefault();
       if (event.key === "Enter" || event.key.toLowerCase() === "y") reply(true);
       else if (event.key === "Escape" || event.key.toLowerCase() === "n") reply(false);
       return;
@@ -142,22 +150,22 @@
   }
 
   onMount(() => {
+    whisper.focus(); // ready to type, no click needed
     reveal.set(GREETING);
     wake();
     const stops = [
       onChunk((text) => {
-        waiting = false;
-        if (clearing) held.push(text);
-        else reveal.push(text);
+        arriving += text;
       }),
-      // The agent has started doing something. We do not say what; we only let go of any narration before it.
+      // The agent has started doing something. Anything it said before this was only narration.
       onStatus(() => {
-        clearThought();
+        arriving = "";
         waiting = true;
       }),
       onPermission((ask) => {
-        clearThought();
+        arriving = "";
         waiting = false;
+        whisper.blur();
         permission = ask;
       }),
     ];
@@ -171,7 +179,7 @@
   });
 </script>
 
-<svelte:window onmousemove={wake} onkeydown={onKey} />
+<svelte:window onmousemove={wake} onkeydown={onKey} onfocus={() => !permission && whisper.focus()} />
 
 <Ambient />
 
@@ -200,7 +208,7 @@
   {/if}
 </main>
 
-<Whisper bind:this={whisper} bind:value={prompt} {awake} placeholder="ask, or paste a link" onsubmit={submit} onwake={wake} />
+<Whisper bind:this={whisper} bind:value={prompt} {awake} hushed={working} onsubmit={submit} onwake={wake} />
 
 <style>
   main {

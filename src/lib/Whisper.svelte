@@ -7,10 +7,10 @@
   let {
     value = $bindable(""),
     awake,
-    placeholder,
+    hushed,
     onsubmit,
     onwake,
-  }: { value: string; awake: boolean; placeholder: string; onsubmit: () => void; onwake: () => void } = $props();
+  }: { value: string; awake: boolean; hushed: boolean; onsubmit: () => void; onwake: () => void } = $props();
 
   type Glyph = { id: number; ch: string };
   let glyphs = $state<Glyph[]>([]);
@@ -78,8 +78,8 @@
 
 <form class:awake onsubmit={(e) => { e.preventDefault(); onsubmit(); }}>
   <div class="mirror" bind:this={box} aria-hidden="true">
-    <span class="placeholder" class:on={value === ""}>{placeholder}</span>
-    <span class="line" class:editing bind:this={line}>{#each glyphs as g, i (g.id)}{#if i === caret}<i class="caret" class:on={focused}></i>{/if}<span transition:glyph={{ duration: editing ? 0 : 220 }}>{g.ch}</span>{/each}{#if caret >= glyphs.length}<i class="caret" class:on={focused}></i>{/if}</span>
+    <span class="invitation" class:on={value === "" && !hushed}>if you need anything, just start typing</span>
+    <span class="line" class:editing bind:this={line}>{#each glyphs as g, i (g.id)}{#if i === caret}<i class="caret" class:on={focused && value !== ""}></i>{/if}<span transition:glyph={{ duration: editing ? 0 : 220 }}>{g.ch}</span>{/each}{#if caret >= glyphs.length}<i class="caret" class:on={focused && value !== ""}></i>{/if}</span>
   </div>
   <input
     bind:this={input}
@@ -91,7 +91,7 @@
     onselect={track}
     onfocus={() => { focused = true; track(); onwake(); }}
     onblur={() => { focused = false; onwake(); }}
-    aria-label={placeholder}
+    aria-label="ask"
     spellcheck="false"
     autocomplete="off"
     autocapitalize="off"
@@ -103,22 +103,21 @@
     position: fixed;
     left: 50%;
     bottom: 7vh;
-    width: min(34rem, 80vw);
+    width: min(24em, 84vw);
     transform: translateX(-50%);
     opacity: 0;
     transition: opacity var(--slow) var(--ease);
   }
   form.awake { opacity: 1; }
 
-  form, input, .mirror { font: italic 20px/1.4 var(--serif); }
+  /* Smaller than the replies, but easy to read. */
+  form, input, .mirror { font: italic clamp(22px, 2.1vw, 32px) / 1.4 var(--serif); }
 
   .mirror, input {
     display: block;
     width: 100%;
     padding: 0.6em 0;
     text-align: center;
-    border-bottom: 1px solid var(--ink-faint);
-    transition: border-color var(--slow) var(--ease);
   }
   .mirror {
     position: relative;
@@ -127,7 +126,6 @@
     white-space: pre;
     color: var(--ink);
   }
-  form:focus-within .mirror { border-bottom-color: rgba(232, 224, 210, 0.7); }
 
   /* The real input sits on top, unseen, to catch the typing. */
   input {
@@ -142,14 +140,15 @@
   }
   input::selection { background: rgba(232, 224, 210, 0.16); color: transparent; }
 
-  .placeholder {
+  /* Leaves quickly when you begin, returns slowly when you pause. */
+  .invitation {
     position: absolute;
     inset: 0.6em 0 auto;
     color: var(--ink-faint);
     opacity: 0;
-    transition: opacity var(--slow) var(--ease);
+    transition: opacity 350ms var(--ease);
   }
-  .placeholder.on { opacity: 1; }
+  .invitation.on { opacity: 1; transition-duration: var(--slow); }
 
   .line {
     position: absolute;

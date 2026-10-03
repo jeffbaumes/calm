@@ -33,6 +33,7 @@ pub fn run() {
                     let _ = window.set_fullscreen(true);
                 }
                 let _ = window.show();
+                let _ = window.set_focus(); // so typing works without a click
             }
             let app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
