@@ -20,6 +20,7 @@ Type anywhere to ask or say something. Enter sends, Esc lets go of a question in
 | `CALM_WINDOWED=1` | small ordinary window instead of fullscreen, for development |
 | `CALM_FOLDER=~/code` | where the agent works (default: your home folder) |
 | `CALM_MODE=default` | how much it asks: `auto` (the default: Claude judges what is safe, so there are almost no questions), `acceptEdits` (edits go through, commands ask), or `default` (asks before anything that changes things) |
+| `CALM_FRESH=1` | start a new conversation instead of resuming the saved one |
 | `CALM_CONNECTORS=1` | let the agent see your claude.ai connectors (mail, Drive, ...). Off by default: they add ~40k tokens to every thought |
 | `CALM_AGENT=/path/to/agent.mjs` | run another ACP agent with node; `scripts/mock-agent.mjs` is an offline stand-in that needs no login |
 
@@ -34,7 +35,8 @@ Svelte UI  --invoke("ask")-->  Rust (src-tauri/src/agent.rs)  --stdio JSON-RPC--
 ```
 
 - `agent.rs` is a small hand-written ACP client (initialize, session/new, session/prompt, session/update). The `agent-client-protocol` crate (2.2) was checked and judged more machinery than four messages need; swapping it in later would stay inside that one file.
-- Everything is one long conversation for as long as the app runs, so Claude remembers what you asked before. The first session is created at launch so the first thought is quick. (After a restart it starts fresh; if you sign in again after a failed attempt it also starts over.)
+- Claude Code's memory notes for the working folder are on, shared with your terminal sessions: what you tell calm can be remembered there, and calm can see what they remember.
+- Everything is one long conversation, and it carries on after you quit and reopen: the session id is kept in the app's data folder and resumed at launch (rebuilt from Claude's own saved transcript, with nothing replayed to the screen). If it can't be resumed it quietly starts over. Signing in again after a failed attempt also starts over, and `CALM_FRESH=1` forgets the old conversation for that launch. The first session is created at launch so the first thought is quick.
 - The agent is Claude's normal coding agent with the calm voice added to its instructions (`system_prompt.txt`: short, plain, at most about three sentences, no narrating of steps, and no mood words like "quiet" or "gentle", which models tend to over-use if the prompt itself leans on them). No Claude Code settings files are loaded (hooks, allow rules, CLAUDE.md), so nothing from your usual setup can interrupt it or approve things behind the card.
 - **Looking never asks.** Reading, searching and web fetches run silently. In the default `auto` mode Claude decides what else is safe, so you are rarely asked about anything; whatever it does ask about (in the stricter modes, everything that changes things) is held in Rust until you answer a quiet full-screen card: Enter or `y` for yes, Esc or `n` for not now. The card shows the real command or path, not just the model's description of it. Esc during a question means "not now"; Esc at any other time lets go of the thought.
 - A reply is held back until it has fully arrived, then laid out once and revealed word by word, so nothing reflows while it streams. Anything the agent says before it starts working is discarded as narration. While it works, a single line ("one moment", later "still working", and so on) stays in the background.

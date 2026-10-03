@@ -163,6 +163,8 @@ fn handle_request(wire: &Wire, id: Value, method: &str, params: &Value) {
 struct Running {
     rpc: Rpc,
     cwd: PathBuf,
+    /// Where the conversation's id is kept, so it can carry on after a restart.
+    store: PathBuf,
     /// The first session, created at launch so the first thought starts instantly.
     warm: Mutex<Option<JoinHandle<Result<String, String>>>>,
     /// The one long conversation. Every thought continues it, so Claude remembers what came before.
@@ -213,6 +215,7 @@ impl Agent {
             // A session begun while signed out can stay stuck that way: start over after signing in.
             if matches!(&done, Err(e) if e.to_lowercase().contains("authenticat")) {
                 *r.session.lock().unwrap() = None;
+                let _ = std::fs::remove_file(&r.store);
             }
             Ok(done?["stopReason"].as_str().unwrap_or("end_turn").to_string())
         }
@@ -257,7 +260,7 @@ impl Running {
     }
 
     async fn new_session(&self) -> Result<String, String> {
-        new_session(&self.rpc, &self.cwd).await
+        open_session(&self.rpc, &self.cwd, &self.store).await
     }
 
     fn warm_session(self: &Arc<Self>) {
@@ -267,27 +270,49 @@ impl Running {
     }
 }
 
-async fn new_session(rpc: &Rpc, cwd: &PathBuf) -> Result<String, String> {
-    let created = rpc
-        .call(
-            "session/new",
-            json!({
-                "cwd": cwd,
-                "mcpServers": [],
-                "_meta": {
-                    // Claude's usual instructions for working, plus the calm voice.
-                    "systemPrompt": { "append": SYSTEM_PROMPT },
-                    "claudeCode": { "options": {
-                        "settingSources": [],                   // no hooks, rules or notifications from any settings file
-                        "allowedTools": LOOKING,                // looking never asks
-                        "model": "sonnet",
-                        "maxTurns": 40,
-                    } },
-                },
-            }),
-        )
-        .await?;
-    let session = created["sessionId"].as_str().ok_or("the agent gave no session")?.to_string();
+/// How every session is set up: Claude's usual instructions plus the calm voice, no settings files.
+fn session_meta() -> Value {
+    json!({
+        "systemPrompt": { "append": SYSTEM_PROMPT },
+        "claudeCode": { "options": {
+            "settingSources": [],       // no hooks, rules or notifications from any settings file
+            "allowedTools": LOOKING,    // looking never asks
+            "model": "sonnet",
+            "maxTurns": 40,
+        } },
+    })
+}
+
+/// Carry on the saved conversation if there is one; otherwise begin a new one and remember it.
+async fn open_session(rpc: &Rpc, cwd: &PathBuf, store: &PathBuf) -> Result<String, String> {
+    let saved = std::fs::read_to_string(store).ok().map(|id| id.trim().to_string()).filter(|id| !id.is_empty());
+    let fresh = std::env::var_os("CALM_FRESH").is_some();
+    let mut session = None;
+
+    if let (Some(id), false) = (&saved, fresh) {
+        // Resuming rebuilds the conversation from Claude's own saved transcript and replays nothing to the screen.
+        // If it can't (expired, moved folder, ...) we quietly start over.
+        let resumed = rpc
+            .call("session/resume", json!({ "sessionId": id, "cwd": cwd, "mcpServers": [], "_meta": session_meta() }))
+            .await;
+        session = resumed.ok().and_then(|r| r["sessionId"].as_str().map(String::from));
+    }
+
+    let session = match session {
+        Some(session) => session,
+        None => {
+            let created = rpc
+                .call("session/new", json!({ "cwd": cwd, "mcpServers": [], "_meta": session_meta() }))
+                .await?;
+            let id = created["sessionId"].as_str().ok_or("the agent gave no session")?.to_string();
+            if let Some(folder) = store.parent() {
+                let _ = std::fs::create_dir_all(folder);
+            }
+            let _ = std::fs::write(store, &id);
+            id
+        }
+    };
+
     // "auto": Claude judges what is safe, so there are almost never any questions. Anything it still
     // asks about reaches the person as the quiet yes/no card. CALM_MODE=acceptEdits asks only about
     // commands; CALM_MODE=default asks before anything that changes things.
@@ -306,6 +331,8 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         Some(folder) => PathBuf::from(folder),
         None => app.path().home_dir().map_err(|e| e.to_string())?,
     };
+
+    let store = app.path().app_local_data_dir().map_err(|e| e.to_string())?.join("session");
 
     let mut command = Command::new("node");
     command.arg(script).stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true);
@@ -340,5 +367,5 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         json!({ "protocolVersion": 1, "clientCapabilities": {}, "clientInfo": { "name": "calm", "version": "0.1.0" } }),
     )
     .await?;
-    Ok(Running { rpc, cwd, warm: Mutex::new(None), session: Mutex::new(None), current: Mutex::new(None), _child: child })
+    Ok(Running { rpc, cwd, store, warm: Mutex::new(None), session: Mutex::new(None), current: Mutex::new(None), _child: child })
 }
