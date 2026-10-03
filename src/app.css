@@ -1,0 +1,32 @@
+:root {
+  --ink: #e8e0d2; /* warm cream: never pure white */
+  --ink-faint: rgba(232, 224, 210, 0.38);
+  --slow: 1100ms; /* the one speed this app moves at */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1); /* ease-out */
+  --serif: "Iowan Old Style", "New York", ui-serif, "Palatino Linotype", Georgia, serif;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+html, body, #app { height: 100%; }
+
+body {
+  background: #2b2733;
+  color: var(--ink);
+  font-family: var(--serif);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/* The whole world arrives slowly, too. */
+#app { animation: arrive calc(var(--slow) * 1.6) var(--ease) both; }
+@keyframes arrive { from { opacity: 0; } }
+
+/* The cursor and the controls rest until the mouse moves. */
+body.resting { cursor: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --slow: 1ms; }
+}
