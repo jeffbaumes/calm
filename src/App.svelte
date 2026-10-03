@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
   import Ambient from "./lib/Ambient.svelte";
   import Whisper from "./lib/Whisper.svelte";
+  import Crossfade from "./lib/Crossfade.svelte";
   import { Reveal } from "./lib/reveal.svelte";
   import { answer, ask, cancel, onChunk, onPermission, onStatus, type Permission } from "./lib/agent";
 
@@ -19,6 +20,9 @@
   let awake = $state(true); // controls are showing
   let prompt = $state("");
   let whisper: Whisper;
+  let thoughtEl: HTMLParagraphElement;
+  let vw = $state(0); // window size, so the text can be fitted to it
+  let vh = $state(0);
   let clearing: Promise<void> | null = null; // the current thought is fading out
   let arriving = ""; // the answer so far; shown only once it is whole, so nothing reflows while it arrives
   let busy = false;
@@ -63,6 +67,96 @@
     patience.forEach(clearTimeout);
     patience = [];
   }
+
+  // ---- Messages that arrive on their own: a reply from another session, finished background work.
+  // The agent speaks without being asked, and nothing marks where its message ends, so a few quiet
+  // seconds mean it is whole. It never replaces what you are reading: it joins a queue, and a quiet
+  // line says a message is waiting. Return (on an empty prompt) or a click opens the oldest one.
+  const SETTLE = 4000; // quiet that means the message is complete
+  let incoming = ""; // the unprompted message so far
+  let incomingTimer: ReturnType<typeof setTimeout>;
+  const later: string[] = []; // whole messages, oldest first
+  let waitingCount = $state(0); // how many are queued (shown only as "a message" or "messages")
+  let opening = false;
+
+  function hear(text = "") {
+    incoming += text;
+    clearTimeout(incomingTimer);
+    incomingTimer = setTimeout(() => {
+      const message = incoming.trim();
+      incoming = "";
+      if (message) {
+        later.push(message);
+        waitingCount = later.length;
+      }
+    }, SETTLE);
+  }
+
+  async function open() {
+    if (!later.length && incoming.trim()) {
+      // One is still arriving: you are ready for it, so don't make you wait for the quiet.
+      clearTimeout(incomingTimer);
+      later.push(incoming.trim());
+      incoming = "";
+      waitingCount = later.length;
+    }
+    if (opening || !later.length || working || permission) return;
+    opening = true;
+    const message = later.shift()!;
+    waitingCount = later.length;
+    await clearThought();
+    reveal.set(message);
+    opening = false;
+  }
+
+  // The line that offers a waiting message: only when nothing else is going on.
+  let appearing = $derived(reveal.words.length > 0 && reveal.count < reveal.words.length);
+  let offering = $derived(waitingCount > 0 && !waiting && !working && !permission && !appearing && !leaving);
+  // The words in that line. They change only while something is shown, so the last words stay put while it fades out.
+  let shownLine = $state("one moment");
+  $effect(() => {
+    if (waiting) shownLine = hint;
+    else if (offering) shownLine = waitingCount > 1 ? "messages are waiting, whenever you're ready" : "a message is waiting, whenever you're ready";
+  });
+
+  // ---- A long reply must never run into the prompt or off the screen: use the largest type that fits.
+  const FONT_MIN = 15;
+
+  function fit() {
+    const el = thoughtEl;
+    if (!el || !vw || !vh) return;
+    const base = Math.min(48, Math.max(28, vw * 0.034)); // the usual size (matches the CSS)
+    // Room above the prompt, kept centred on the screen like a short reply would be.
+    const promptTop = vh - vh * 0.07 - 2.6 * Math.min(32, Math.max(22, vw * 0.021));
+    const room = 2 * Math.min(vh / 2 - vh * 0.08, promptTop - vh * 0.04 - vh / 2);
+
+    el.style.maxWidth = `${Math.min(24 * base, vw * 0.72)}px`; // fixed, so smaller type fits more per line
+    el.style.maxHeight = "none";
+    el.style.overflowY = "visible";
+    const fits = (px: number) => {
+      el.style.fontSize = `${px}px`;
+      return el.scrollHeight <= room;
+    };
+    if (!fits(base)) {
+      let small = FONT_MIN, large = base;
+      while (large - small > 0.5) {
+        const middle = (small + large) / 2;
+        if (fits(middle)) small = middle;
+        else large = middle;
+      }
+      el.style.fontSize = `${small}px`;
+      if (el.scrollHeight > room) {
+        // Even the smallest type does not fit: let it scroll rather than spill.
+        el.style.maxHeight = `${room}px`;
+        el.style.overflowY = "auto";
+      }
+    }
+  }
+
+  $effect(() => {
+    void [reveal.words.length, vw, vh]; // fit again when the text or the window changes
+    tick().then(fit);
+  });
 
   /** Fade the current thought away, then forget it. Nothing on screen ever just vanishes. */
   function clearThought() {
@@ -136,6 +230,11 @@
       else if (event.key === "Escape" || event.key.toLowerCase() === "n") reply(false);
       return;
     }
+    if (event.key === "Enter" && prompt.trim() === "") {
+      event.preventDefault(); // nothing to send: Return means "show me the next message"
+      open();
+      return;
+    }
     if (event.key === "Escape") {
       whisper.blur();
       prompt = "";
@@ -155,17 +254,25 @@
     wake();
     const stops = [
       onChunk((text) => {
-        arriving += text;
+        if (busy) arriving += text;
+        else hear(text);
       }),
       // The agent has started doing something. Anything it said before this was only narration.
       onStatus(() => {
-        arriving = "";
-        waiting = true;
+        if (busy) {
+          arriving = "";
+          waiting = true;
+        } else {
+          incoming = "";
+          hear();
+        }
       }),
       onPermission((ask) => {
         arriving = "";
+        incoming = "";
         waiting = false;
         whisper.blur();
+        clearThought();
         permission = ask;
       }),
     ];
@@ -179,18 +286,16 @@
   });
 </script>
 
-<svelte:window onmousemove={wake} onkeydown={onKey} onfocus={() => !permission && whisper.focus()} />
+<svelte:window bind:innerWidth={vw} bind:innerHeight={vh} onmousemove={wake} onkeydown={onKey} onfocus={() => !permission && whisper.focus()} />
 
 <Ambient />
 
 <main>
-  <p class="thought" class:leaving aria-live="polite">
+  <p class="thought" class:leaving bind:this={thoughtEl} aria-live="polite">
     {#each reveal.words as word, i}<span class:on={i < reveal.count}>{word}</span>{" "}{/each}
   </p>
-<div class="hint" class:on={waiting}>
-    {#key hint}
-      <span in:fade={{ duration: 1100, easing: cubicOut }} out:fade={{ duration: 900, easing: cubicOut }}>{hint}</span>
-    {/key}
+<div class="hint" class:on={waiting || offering} class:offering={offering && !waiting}>
+    <Crossfade text={shownLine} onclick={open} />
   </div>
 
   {#if permission}
@@ -230,6 +335,8 @@
     transition: opacity var(--slow) var(--ease);
   }
   .thought.leaving { opacity: 0; }
+  .thought { scrollbar-width: none; }
+  .thought::-webkit-scrollbar { display: none; }
 
   /* Words are laid out in advance and simply come into focus. */
   .thought span {
@@ -240,25 +347,20 @@
   .thought span.on { opacity: 0.94; filter: none; }
 
   .hint {
+    pointer-events: none; /* only the offer itself can be clicked */
     position: fixed;
     inset: auto 0 24vh;
     display: grid;
     justify-items: center;
-    font-size: 20px;
+    font-size: clamp(22px, 2.1vw, 32px); /* as large as the prompt line */
     font-style: italic;
     color: var(--ink-faint);
     opacity: 0;
     transition: opacity var(--slow) var(--ease);
   }
   .hint.on { opacity: 1; transition-delay: 1800ms; }
-  /* Old and new status text sit in the same spot and cross-fade. */
-  .hint span {
-    grid-area: 1 / 1;
-    max-width: 70vw;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
+  /* An offered message is not a wait: no delay, a little more present, and it can be clicked. */
+  .hint.offering.on { transition-delay: 0s; color: rgba(232, 224, 210, 0.6); }
 
   .question {
     max-width: 24em;

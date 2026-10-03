@@ -34,6 +34,7 @@ export async function ask(prompt: string): Promise<void> {
     await invoke("ask", { prompt });
     return;
   }
+  if (prompt.includes("slow")) await sleep(12000); // a long wait, to see the waiting line change
   if (prompt.includes("signedout")) {
     // What the real adapter does when not signed in: a raw message, then an error.
     window.__calmPreview?.("Failed to authenticate: OAuth session expired and could not be refreshed");

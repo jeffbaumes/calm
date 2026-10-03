@@ -52,6 +52,8 @@ struct Wire {
     pending: Pending,
     perms: Perms,
     alive: Arc<AtomicBool>,
+    /// True while the start-up command runs: its output is not for the screen.
+    priming: Arc<AtomicBool>,
 }
 
 impl Wire {
@@ -87,7 +89,7 @@ async fn read_loop(stdout: tokio::process::ChildStdout, wire: Wire) {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
         match (msg["method"].as_str(), msg.get("id")) {
             (Some(method), Some(id)) => handle_request(&wire, id.clone(), method, &msg["params"]),
-            (Some("session/update"), None) => handle_update(&wire.app, &msg["params"]["update"]),
+            (Some("session/update"), None) => handle_update(&wire, &msg["params"]["update"]),
             (None, Some(id)) => {
                 let Some(reply) = id.as_u64().and_then(|id| wire.pending.lock().unwrap().remove(&id)) else { continue };
                 let _ = reply.send(match msg.get("error") {
@@ -104,7 +106,11 @@ async fn read_loop(stdout: tokio::process::ChildStdout, wire: Wire) {
     wire.perms.lock().unwrap().clear();
 }
 
-fn handle_update(app: &AppHandle, update: &Value) {
+fn handle_update(wire: &Wire, update: &Value) {
+    if wire.priming.load(Ordering::SeqCst) {
+        return;
+    }
+    let app = &wire.app;
     match update["sessionUpdate"].as_str() {
         Some("agent_message_chunk") if update["content"]["type"] == "text" => {
             let _ = app.emit("calm://chunk", update["content"]["text"].as_str().unwrap_or_default());
@@ -318,6 +324,13 @@ async fn open_session(rpc: &Rpc, cwd: &PathBuf, store: &PathBuf) -> Result<Strin
     // commands; CALM_MODE=default asks before anything that changes things.
     let mode = std::env::var("CALM_MODE").unwrap_or_else(|_| "auto".into());
     let _ = rpc.call("session/set_mode", json!({ "sessionId": session, "modeId": mode })).await;
+
+    // The adapter only starts listening to the agent once its first prompt arrives, so anything the agent
+    // says on its own before then (a reply from another session) would go unheard. `/context` is answered
+    // locally, with no model call and no cost; running it once starts the listening. Its output is dropped.
+    rpc.wire.priming.store(true, Ordering::SeqCst);
+    let _ = rpc.call("session/prompt", json!({ "sessionId": session, "prompt": [{ "type": "text", "text": "/context" }] })).await;
+    rpc.wire.priming.store(false, Ordering::SeqCst);
     Ok(session)
 }
 
@@ -358,6 +371,7 @@ async fn start(app: &AppHandle) -> Result<Running, String> {
         pending: Default::default(),
         perms: Default::default(),
         alive: Arc::new(AtomicBool::new(true)),
+        priming: Default::default(),
     };
     tauri::async_runtime::spawn(read_loop(child.stdout.take().unwrap(), wire.clone()));
 
