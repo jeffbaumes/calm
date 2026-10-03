@@ -4,7 +4,8 @@
   import { cubicOut } from "svelte/easing";
   import Ambient from "./lib/Ambient.svelte";
   import Whisper from "./lib/Whisper.svelte";
-  import Crossfade from "./lib/Crossfade.svelte";
+  import SignalLine from "./lib/SignalLine.svelte";
+  import { Signal } from "./lib/signal.svelte";
   import { Reveal } from "./lib/reveal.svelte";
   import { answer, ask, cancel, onChunk, onPermission, onStatus, type Permission } from "./lib/agent";
 
@@ -14,7 +15,7 @@
   const reveal = new Reveal();
   let leaving = $state(false); // the current thought is fading away
   let waiting = $state(false); // asked, but nothing has arrived yet
-  let hint = $state("one moment"); // changes gently if the work takes a while
+  let hint = $state(""); // what to say while waiting: nothing at first, then it changes gently if the work takes a while
   let patience: ReturnType<typeof setTimeout>[] = [];
   let permission = $state<Permission | null>(null); // the agent is asking to change something
   let awake = $state(true); // controls are showing
@@ -49,8 +50,9 @@
     return "Something got tangled just now. Take a breath, and try again whenever you like.";
   }
 
-  /** If the work runs long, the hint softly changes: after these many seconds, to these words. */
+  /** While waiting, the line says nothing at first (a quick reply never shows it), then, after these many seconds, these words. */
   const WAITING: [number, string][] = [
+    [1.8, "one moment"],
     [8, "still working"],
     [20, "no rush"],
     [40, "taking its time"],
@@ -59,7 +61,7 @@
 
   function beginWaiting() {
     endWaiting();
-    hint = "one moment";
+    hint = "";
     patience = WAITING.map(([seconds, words]) => setTimeout(() => (hint = words), seconds * 1000));
   }
 
@@ -109,14 +111,46 @@
     opening = false;
   }
 
-  // The line that offers a waiting message: only when nothing else is going on.
+  // ---- The one quiet line. Every message the app might say goes through a single Signal (see signal.svelte.ts),
+  // so only one thing is ever fading in or out. This decides what, if anything, it should be saying now.
+  const OFFER_ONE = "a message is waiting, whenever you're ready";
+  const OFFER_MANY = "messages are waiting, whenever you're ready";
+  const INVITATION = "if you need anything, just start typing";
+  const INVITE_UNTIL = 3; // after this many questions you know what to do: it never appears again
+  const INVITE_FIRST = 4000; // on the very first start: soon after the greeting
+  const INVITE_LATER = 90000; // afterwards: only after a long, quiet while
+
+  const signal = new Signal();
+
   let appearing = $derived(reveal.words.length > 0 && reveal.count < reveal.words.length);
   let offering = $derived(waitingCount > 0 && !waiting && !working && !permission && !appearing && !leaving);
-  // The words in that line. They change only while something is shown, so the last words stay put while it fades out.
-  let shownLine = $state("one moment");
+
+  const readSent = () => {
+    try {
+      return Number(localStorage.getItem("calm.sent")) || 0;
+    } catch {
+      return 0;
+    }
+  };
+  let sent = $state(readSent()); // questions asked so far, remembered between launches
+  let inviting = $state(false);
+
   $effect(() => {
-    if (waiting) shownLine = hint;
-    else if (offering) shownLine = waitingCount > 1 ? "messages are waiting, whenever you're ready" : "a message is waiting, whenever you're ready";
+    inviting = false;
+    const quiet =
+      sent < INVITE_UNTIL && !working && !waiting && !permission && !appearing && !leaving && prompt === "" && waitingCount === 0;
+    if (!quiet) return;
+    const timer = setTimeout(() => (inviting = true), sent === 0 ? INVITE_FIRST : INVITE_LATER);
+    return () => clearTimeout(timer);
+  });
+
+  // Highest priority first: waiting, then an offered message, then the invitation.
+  let wanted = $derived(
+    permission ? "" : waiting ? hint : working ? "" : offering ? (waitingCount > 1 ? OFFER_MANY : OFFER_ONE) : inviting ? INVITATION : "",
+  );
+  // Starting to type, or a question appearing, takes priority over everything: the line leaves at once.
+  $effect(() => {
+    signal.show(wanted, prompt !== "" || !!permission);
   });
 
   // ---- A long reply must never run into the prompt or off the screen: use the largest type that fits.
@@ -126,9 +160,12 @@
     const el = thoughtEl;
     if (!el || !vw || !vh) return;
     const base = Math.min(48, Math.max(28, vw * 0.034)); // the usual size (matches the CSS)
-    // Room above the prompt, kept centred on the screen like a short reply would be.
-    const promptTop = vh - vh * 0.07 - 2.6 * Math.min(32, Math.max(22, vw * 0.021));
-    const room = 2 * Math.min(vh / 2 - vh * 0.08, promptTop - vh * 0.04 - vh / 2);
+    // Room for the reply: above the signal line, which sits just above the prompt (see SignalLine.svelte).
+    // The reply is centred on the screen like a short one would be, so the room is twice the smaller half.
+    const small = Math.min(32, Math.max(22, vw * 0.021));
+    const promptTop = vh - vh * 0.07 - 2.6 * small;
+    const signalTop = promptTop - vh * 0.015 - 1.4 * small;
+    const room = 2 * Math.min(vh / 2 - vh * 0.08, signalTop - vh * 0.03 - vh / 2);
 
     el.style.maxWidth = `${Math.min(24 * base, vw * 0.72)}px`; // fixed, so smaller type fits more per line
     el.style.maxHeight = "none";
@@ -185,10 +222,13 @@
       await clearing;
       const answer = arriving.trim();
       waiting = false;
+      await Promise.race([signal.hidden(), sleep(4500)]); // the line leaves before the words arrive
       if (answer) reveal.set(answer);
       else reveal.set(cancelled ? "Alright. We can leave that one for now." : "All done.");
     } catch (error) {
       arriving = "";
+      waiting = false;
+      await Promise.race([signal.hidden(), sleep(4500)]);
       await clearThought();
       reveal.set(gentle(String(error)));
     } finally {
@@ -205,6 +245,12 @@
     if (!text || busy) return;
     prompt = "";
     whisper.blur();
+    sent++;
+    try {
+      localStorage.setItem("calm.sent", String(sent));
+    } catch {
+      // remembering is a nicety
+    }
     think(text);
   }
 
@@ -294,9 +340,7 @@
   <p class="thought" class:leaving bind:this={thoughtEl} aria-live="polite">
     {#each reveal.words as word, i}<span class:on={i < reveal.count}>{word}</span>{" "}{/each}
   </p>
-<div class="hint" class:on={waiting || offering} class:offering={offering && !waiting}>
-    <Crossfade text={shownLine} onclick={open} />
-  </div>
+<SignalLine text={signal.text} visible={signal.visible} clickable={signal.text === OFFER_ONE || signal.text === OFFER_MANY} onclick={open} />
 
   {#if permission}
     {#key permission.key}
@@ -313,7 +357,7 @@
   {/if}
 </main>
 
-<Whisper bind:this={whisper} bind:value={prompt} {awake} hushed={working} onsubmit={submit} onwake={wake} />
+<Whisper bind:this={whisper} bind:value={prompt} {awake} onsubmit={submit} onwake={wake} />
 
 <style>
   main {
@@ -345,22 +389,6 @@
     transition: opacity var(--slow) var(--ease), filter var(--slow) var(--ease);
   }
   .thought span.on { opacity: 0.94; filter: none; }
-
-  .hint {
-    pointer-events: none; /* only the offer itself can be clicked */
-    position: fixed;
-    inset: auto 0 24vh;
-    display: grid;
-    justify-items: center;
-    font-size: clamp(22px, 2.1vw, 32px); /* as large as the prompt line */
-    font-style: italic;
-    color: var(--ink-faint);
-    opacity: 0;
-    transition: opacity var(--slow) var(--ease);
-  }
-  .hint.on { opacity: 1; transition-delay: 1800ms; }
-  /* An offered message is not a wait: no delay, a little more present, and it can be clicked. */
-  .hint.offering.on { transition-delay: 0s; color: rgba(232, 224, 210, 0.6); }
 
   .question {
     max-width: 24em;

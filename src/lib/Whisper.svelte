@@ -7,10 +7,9 @@
   let {
     value = $bindable(""),
     awake,
-    hushed,
     onsubmit,
     onwake,
-  }: { value: string; awake: boolean; hushed: boolean; onsubmit: () => void; onwake: () => void } = $props();
+  }: { value: string; awake: boolean; onsubmit: () => void; onwake: () => void } = $props();
 
   type Glyph = { id: number; ch: string };
   let glyphs = $state<Glyph[]>([]);
@@ -78,7 +77,6 @@
 
 <form class:awake onsubmit={(e) => { e.preventDefault(); onsubmit(); }}>
   <div class="mirror" bind:this={box} aria-hidden="true">
-    <span class="invitation" class:on={value === "" && !hushed}>if you need anything, just start typing</span>
     <span class="line" class:editing bind:this={line}>{#each glyphs as g, i (g.id)}{#if i === caret}<i class="caret" class:on={focused && value !== ""}></i>{/if}<span transition:glyph={{ duration: editing ? 0 : 220 }}>{g.ch}</span>{/each}{#if caret >= glyphs.length}<i class="caret" class:on={focused && value !== ""}></i>{/if}</span>
   </div>
   <input
@@ -111,7 +109,7 @@
   form.awake { opacity: 1; }
 
   /* Smaller than the replies, but easy to read. */
-  form, input, .mirror { font: italic clamp(22px, 2.1vw, 32px) / 1.4 var(--serif); }
+  form, input, .mirror { font: italic var(--small) / 1.4 var(--serif); }
 
   .mirror, input {
     display: block;
@@ -139,16 +137,6 @@
     user-select: text;
   }
   input::selection { background: rgba(232, 224, 210, 0.16); color: transparent; }
-
-  /* Leaves quickly when you begin, returns slowly when you pause. */
-  .invitation {
-    position: absolute;
-    inset: 0.6em 0 auto;
-    color: var(--ink-faint);
-    opacity: 0;
-    transition: opacity 350ms var(--ease);
-  }
-  .invitation.on { opacity: 1; transition-duration: var(--slow); }
 
   .line {
     position: absolute;
