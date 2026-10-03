@@ -5,6 +5,7 @@
 //!   `calm://chunk`      streamed text of the reply
 //!   `calm://status`     what the agent is doing right now ("Reading App.svelte")
 //!   `calm://permission` a request to change something, answered with the `answer` command
+//!   `calm://session`    another Claude session was messaged, or sent a message: {id, title}
 //! Looking around (read, search, fetch) is always allowed. Anything that changes
 //! something waits for a quiet yes or no from the person.
 
@@ -18,6 +19,7 @@ use std::{
         Arc, Mutex,
     },
 };
+use crate::sessions;
 use tauri::{async_runtime::JoinHandle, AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -276,6 +278,49 @@ impl Running {
     }
 }
 
+/// Where Claude Code keeps the saved conversation of a session in a folder.
+fn transcript_path(cwd: &PathBuf, session: &str) -> Option<PathBuf> {
+    let folder: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(".claude/projects").join(folder).join(format!("{session}.jsonl")))
+}
+
+/// Watches the saved conversation for mentions of other sessions and tells the app, so it can offer a link to them.
+/// (Only what is written from now on: older lines are history.)
+fn watch_for_sessions(app: AppHandle, path: PathBuf) {
+    use std::io::{Read, Seek, SeekFrom};
+    tauri::async_runtime::spawn(async move {
+        let mut offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let mut partial = String::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let Ok(len) = std::fs::metadata(&path).map(|m| m.len()) else { continue };
+            if len < offset {
+                (offset, partial) = (0, String::new()); // rewritten: start over
+            }
+            if len == offset {
+                continue;
+            }
+            let mut fresh = Vec::new();
+            let read = std::fs::File::open(&path).and_then(|mut f| {
+                f.seek(SeekFrom::Start(offset))?;
+                f.take(len - offset).read_to_end(&mut fresh)
+            });
+            if read.is_err() {
+                continue;
+            }
+            offset = len;
+            partial.push_str(&String::from_utf8_lossy(&fresh));
+            let Some(end) = partial.rfind('\n') else { continue };
+            let complete: String = partial.drain(..=end).collect();
+            for line in complete.lines() {
+                if let Some(peer) = sessions::mention(line).and_then(|m| sessions::resolve(&m)) {
+                    let _ = app.emit("calm://session", json!({ "id": peer.id, "title": peer.title }));
+                }
+            }
+        }
+    });
+}
+
 /// How every session is set up: Claude's usual instructions plus the calm voice, no settings files.
 fn session_meta() -> Value {
     json!({
@@ -331,6 +376,10 @@ async fn open_session(rpc: &Rpc, cwd: &PathBuf, store: &PathBuf) -> Result<Strin
     rpc.wire.priming.store(true, Ordering::SeqCst);
     let _ = rpc.call("session/prompt", json!({ "sessionId": session, "prompt": [{ "type": "text", "text": "/context" }] })).await;
     rpc.wire.priming.store(false, Ordering::SeqCst);
+
+    if let Some(path) = transcript_path(cwd, &session) {
+        watch_for_sessions(rpc.wire.app.clone(), path);
+    }
     Ok(session)
 }
 

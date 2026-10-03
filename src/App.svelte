@@ -7,7 +7,7 @@
   import SignalLine from "./lib/SignalLine.svelte";
   import { Signal } from "./lib/signal.svelte";
   import { Reveal } from "./lib/reveal.svelte";
-  import { answer, ask, cancel, onChunk, onPermission, onStatus, type Permission } from "./lib/agent";
+  import { answer, ask, cancel, onChunk, onPermission, onSession, onStatus, openSession, type Peer, type Permission } from "./lib/agent";
 
   const GREETING =
     "There is nothing you need to do right now. The day can wait a little while, and so can everything in it.";
@@ -77,7 +77,7 @@
   const SETTLE = 4000; // quiet that means the message is complete
   let incoming = ""; // the unprompted message so far
   let incomingTimer: ReturnType<typeof setTimeout>;
-  const later: string[] = []; // whole messages, oldest first
+  const later: { text: string; peer: Peer | null }[] = []; // whole messages, oldest first, with the session each came from
   let waitingCount = $state(0); // how many are queued (shown only as "a message" or "messages")
   let opening = false;
 
@@ -88,7 +88,7 @@
       const message = incoming.trim();
       incoming = "";
       if (message) {
-        later.push(message);
+        later.push({ text: message, peer: recentPeer(90000) });
         waitingCount = later.length;
       }
     }, SETTLE);
@@ -98,7 +98,7 @@
     if (!later.length && incoming.trim()) {
       // One is still arriving: you are ready for it, so don't make you wait for the quiet.
       clearTimeout(incomingTimer);
-      later.push(incoming.trim());
+      later.push({ text: incoming.trim(), peer: recentPeer(90000) });
       incoming = "";
       waitingCount = later.length;
     }
@@ -106,9 +106,24 @@
     opening = true;
     const message = later.shift()!;
     waitingCount = later.length;
+    related = null;
     await clearThought();
-    reveal.set(message);
+    reveal.set(message.text);
+    related = message.peer;
+    answeredAt = 0;
     opening = false;
+  }
+
+  // ---- A link to the session involved. When the agent messages another Claude session, or hears from one, the
+  // desktop app can show that session. The link is offered under the answer (or message) it belongs to,
+  // whether or not anything needs doing there: it is only there if you want more detail.
+  let related = $state<Peer | null>(null); // the session behind what is on screen
+  let lastPeer: (Peer & { at: number }) | null = null;
+  let answeredAt = 0; // when the current answer appeared (the saved conversation is read a moment late)
+  let turnStartedAt = 0;
+
+  function recentPeer(withinMs: number): Peer | null {
+    return lastPeer && Date.now() - lastPeer.at < withinMs ? { id: lastPeer.id, title: lastPeer.title } : null;
   }
 
   // ---- The one quiet line. Every message the app might say goes through a single Signal (see signal.svelte.ts),
@@ -124,6 +139,8 @@
 
   let appearing = $derived(reveal.words.length > 0 && reveal.count < reveal.words.length);
   let offering = $derived(waitingCount > 0 && !waiting && !working && !permission && !appearing && !leaving);
+  let linkLine = $derived(related ? `see ${related.title} in Claude` : "");
+  let linking = $derived(!!related && !waiting && !working && !permission && !appearing && !leaving);
 
   const readSent = () => {
     try {
@@ -146,8 +163,14 @@
 
   // Highest priority first: waiting, then an offered message, then the invitation.
   let wanted = $derived(
-    permission ? "" : waiting ? hint : working ? "" : offering ? (waitingCount > 1 ? OFFER_MANY : OFFER_ONE) : inviting ? INVITATION : "",
+    permission ? "" : waiting ? hint : working ? "" : offering ? (waitingCount > 1 ? OFFER_MANY : OFFER_ONE) : linking ? linkLine : inviting ? INVITATION : "",
   );
+  /** A click on the line: open the waiting message, or the session it is offering to show. */
+  function pressed() {
+    if (signal.text === OFFER_ONE || signal.text === OFFER_MANY) open();
+    else if (related && signal.text === linkLine) openSession(related.id);
+  }
+
   // Starting to type, or a question appearing, takes priority over everything: the line leaves at once.
   $effect(() => {
     signal.show(wanted, prompt !== "" || !!permission);
@@ -212,6 +235,8 @@
     busy = true;
     working = true;
     cancelled = false;
+    related = null;
+    turnStartedAt = Date.now();
     await clearThought();
     waiting = true;
     beginWaiting();
@@ -225,6 +250,8 @@
       await Promise.race([signal.hidden(), sleep(4500)]); // the line leaves before the words arrive
       if (answer) reveal.set(answer);
       else reveal.set(cancelled ? "Alright. We can leave that one for now." : "All done.");
+      answeredAt = Date.now();
+      related = lastPeer && lastPeer.at >= turnStartedAt ? { id: lastPeer.id, title: lastPeer.title } : null;
     } catch (error) {
       arriving = "";
       waiting = false;
@@ -313,6 +340,11 @@
           hear();
         }
       }),
+      onSession((peer) => {
+        lastPeer = { ...peer, at: Date.now() };
+        // The saved conversation is read a moment late: a session mentioned just after an answer appeared still belongs to it.
+        if (!busy && Date.now() - answeredAt < 4000) related = peer;
+      }),
       onPermission((ask) => {
         arriving = "";
         incoming = "";
@@ -340,7 +372,7 @@
   <p class="thought" class:leaving bind:this={thoughtEl} aria-live="polite">
     {#each reveal.words as word, i}<span class:on={i < reveal.count}>{word}</span>{" "}{/each}
   </p>
-<SignalLine text={signal.text} visible={signal.visible} clickable={signal.text === OFFER_ONE || signal.text === OFFER_MANY} onclick={open} />
+<SignalLine text={signal.text} visible={signal.visible} clickable={signal.text === OFFER_ONE || signal.text === OFFER_MANY || (!!related && signal.text === linkLine)} onclick={pressed} />
 
   {#if permission}
     {#key permission.key}

@@ -13,6 +13,17 @@ export async function onChunk(onChunk: (text: string) => void): Promise<() => vo
   return inTauri ? listen<string>("calm://chunk", (e) => onChunk(e.payload)) : (window.__calmPreview = onChunk, () => {});
 }
 
+export type Peer = { id: string; title: string };
+
+/** Another Claude session was messaged, or sent a message: the desktop app can show it. */
+export async function onSession(onPeer: (peer: Peer) => void): Promise<() => void> {
+  return inTauri ? listen<Peer>("calm://session", (e) => onPeer(e.payload)) : (window.__calmPreviewSession = onPeer, () => {});
+}
+
+/** Show that session in the Claude desktop app. (No copy is made: it is the session that is already there.) */
+export const openSession = (id: string) =>
+  inTauri ? invoke("open_session", { id }) : Promise.resolve(void console.info("would open session", id));
+
 export type Permission = { key: string; kind: string; title: string; detail: string | null };
 
 /** What the agent is doing right now, in a few words ("Reading App.svelte"). */
@@ -64,6 +75,7 @@ declare global {
   interface Window {
     __calmPreview?: (text: string) => void;
     __calmPreviewStatus?: (text: string) => void;
+    __calmPreviewSession?: (peer: Peer) => void;
     __calmPreviewAsk?: (ask: Permission) => void;
     __calmPreviewAnswered?: () => void;
   }

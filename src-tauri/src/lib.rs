@@ -1,4 +1,5 @@
 mod agent;
+mod sessions;
 
 use agent::Agent;
 use tauri::{AppHandle, Manager, State};
@@ -18,6 +19,11 @@ async fn cancel(agent: State<'_, Agent>) -> Result<(), String> {
 async fn answer(agent: State<'_, Agent>, key: String, yes: bool) -> Result<(), String> {
     agent.answer(&key, yes).await;
     Ok(())
+}
+
+#[tauri::command]
+fn open_session(id: String) -> Result<(), String> {
+    sessions::open(&id)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -41,7 +47,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ask, cancel, answer])
+        .invoke_handler(tauri::generate_handler![ask, cancel, answer, open_session])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
