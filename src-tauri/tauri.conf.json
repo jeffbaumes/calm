@@ -16,7 +16,7 @@
         "width": 1100,
         "height": 720,
         "center": true,
-        "decorations": false,
+        "decorations": true,
         "visible": false,
         "backgroundColor": "#2b2733"
       }

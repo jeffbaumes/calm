@@ -1,6 +1,6 @@
 # calm
 
-A fullscreen desktop app that is the opposite of a stimulating UI: one thought at a time, in large quiet type, on a slowly drifting background. A simple prompt summarizes text and websites in a chill way, and can also do real work (read your files, run commands, make changes) with all of it delivered gently.
+A desktop app (an ordinary window; the green button takes it fullscreen) that is the opposite of a stimulating UI: one thought at a time, in large quiet type, on a slowly drifting background. A simple prompt summarizes text and websites in a chill way, and can also do real work (read your files, run commands, make changes) with all of it delivered gently.
 
 Tauri 2 (Rust) + Svelte 5, talking to Claude through the [Agent Client Protocol](https://github.com/agentclientprotocol/claude-agent-acp) adapter.
 
@@ -17,7 +17,6 @@ Type anywhere to ask or say something. Enter sends, Esc lets go of a question in
 
 | env var | effect |
 | --- | --- |
-| `CALM_WINDOWED=1` | small ordinary window instead of fullscreen, for development |
 | `CALM_FOLDER=~/code` | where the agent works (default: your home folder) |
 | `CALM_MODE=default` | how much it asks: `auto` (the default: Claude judges what is safe, so there are almost no questions), `acceptEdits` (edits go through, commands ask), or `default` (asks before anything that changes things) |
 | `CALM_FRESH=1` | start a new conversation instead of resuming the saved one |

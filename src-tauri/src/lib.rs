@@ -31,13 +31,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Agent::default())
         .setup(|app| {
-            // Fullscreen and chromeless; CALM_WINDOWED=1 keeps an ordinary window for development.
+            // An ordinary window; the green title-bar button takes it fullscreen.
             if let Some(window) = app.get_webview_window("main") {
-                if std::env::var_os("CALM_WINDOWED").is_some() {
-                    let _ = window.set_decorations(true);
-                } else {
-                    let _ = window.set_fullscreen(true);
-                }
                 let _ = window.show();
                 let _ = window.set_focus(); // so typing works without a click
             }
